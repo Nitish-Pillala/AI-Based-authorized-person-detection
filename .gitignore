@@ -55,7 +55,11 @@ htmlcov/
 *.sqlite3
 *.db
 
-# Runtime-generated data
-data/logs/
-data/unknown_faces/
+# Runtime-generated data — keep the folders (via .gitkeep) but ignore their contents
+data/logs/*
+!data/logs/.gitkeep
+data/unknown_faces/*
+!data/unknown_faces/.gitkeep
+data/known_faces/*
+!data/known_faces/.gitkeep
 data/captures/
