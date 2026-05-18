@@ -1,0 +1,777 @@
+================================================================================
+        REAL-TIME CCTV UNKNOWN PERSON IDENTIFICATION SYSTEM
+                    COMPLETE PROJECT EXPLANATION
+================================================================================
+
+------------------------------------------------------------------------
+SECTION 1: WHAT IS THIS PROJECT?
+------------------------------------------------------------------------
+
+This is a production-grade, AI-powered CCTV Surveillance System that:
+
+  - Connects to multiple IP/RTSP cameras simultaneously (like security
+    cameras in malls, offices, banks, airports)
+  - Automatically detects every human face in the video feed
+  - Recognizes whether the person is KNOWN (registered in database)
+    or UNKNOWN (a stranger)
+  - Tracks each person across video frames so they are counted only ONCE
+    (no duplicate records)
+  - Saves photos and information of unknown persons
+  - Shows everything on a live real-time web dashboard
+  - Provides a professional REST API for integration with other systems
+
+Real-world use cases:
+  → Office/factory attendance and access control
+  → Shopping mall customer behavior analysis
+  → Bank branch security monitoring
+  → Airport / border surveillance
+  → School / college campus safety
+
+
+------------------------------------------------------------------------
+SECTION 2: COMPLETE TECH STACK (ALL TECHNOLOGIES USED)
+------------------------------------------------------------------------
+
+LAYER            | TECHNOLOGY           | PURPOSE
+-----------------|----------------------|--------------------------------
+AI Detection     | YOLOv8               | Detect faces in video frames
+AI Recognition   | InsightFace          | Identify who the person is
+AI Tracking      | DeepSORT             | Track person across frames
+Backend API      | FastAPI              | REST API server
+Dashboard UI     | Streamlit            | Web dashboard
+Database         | MySQL                | Store all data
+Camera Streaming | OpenCV (cv2)         | Read RTSP video streams
+Math/Arrays      | NumPy                | Handle embeddings & calculations
+Real-Time Comms  | WebSocket            | Push live updates to browser
+Authentication   | JWT (JSON Web Token) | Secure API access
+Rate Limiting    | SlowAPI              | Prevent API abuse
+Data Validation  | Pydantic             | Validate API request data
+Motion Modeling  | FilterPy (Kalman)    | Predict where person moves next
+Assignment Math  | SciPy                | Match detections to tracks
+HTTP Requests    | HTTPX                | Frontend calls backend API
+Logging          | Loguru               | Beautiful colored logs
+System Metrics   | PSUtil               | Monitor CPU/RAM/Disk
+Charts           | Plotly               | Interactive analytics charts
+Data Tables      | Pandas               | Process tabular data
+Threading        | Python Threading     | Run multiple cameras in parallel
+Environment      | Python-Dotenv        | Load .env configuration
+Password Hash    | Passlib (bcrypt)     | Secure password storage
+File Storage     | OS / PathLib         | Save face images to disk
+
+
+------------------------------------------------------------------------
+SECTION 3: DETAILED EXPLANATION OF EACH TECHNOLOGY
+------------------------------------------------------------------------
+
+══════════════════════════════════════
+3.1  YOLOv8  (You Only Look Once v8)
+══════════════════════════════════════
+
+WHAT IT IS:
+  YOLOv8 is a state-of-the-art deep learning model made by Ultralytics.
+  "YOLO" means it scans the entire image in ONE PASS (unlike older methods
+  that scanned multiple times). Version 8 is the latest and fastest.
+
+WHAT IT DOES IN OUR PROJECT:
+  - Takes each video frame from the camera
+  - Scans it and finds ALL faces in that frame
+  - Returns bounding boxes: [x1, y1, x2, y2] — coordinates of each face
+  - Returns confidence score: how sure it is (0.0 to 1.0)
+  - We only accept faces with confidence > 0.5 (50%)
+
+WHY WE CHOSE IT:
+  - Extremely FAST — can process 30+ frames per second on GPU
+  - Very ACCURATE — 96%+ detection rate even on small/blurry faces
+  - Handles multiple faces in one frame simultaneously
+  - Works even in poor lighting conditions
+
+HOW IT WORKS (SIMPLE EXPLANATION):
+  Imagine dividing the photo into a grid of squares.
+  Each grid cell "votes" on whether it contains a face and where exactly.
+  All votes are combined and the best detections are selected.
+  This happens in 30-50 milliseconds — faster than a blink!
+
+FALLBACK:
+  If YOLOv8 is not available, we fall back to OpenCV's Haar Cascade
+  which is an older but reliable face detector built into OpenCV.
+
+FILES USED: backend/face_detection.py
+
+
+══════════════════════════════════════════
+3.2  InsightFace  (Face Recognition AI)
+══════════════════════════════════════════
+
+WHAT IT IS:
+  InsightFace is a powerful open-source face recognition library.
+  It was developed by researchers and is used by many production systems.
+  It converts a face image into a "mathematical signature" called an
+  EMBEDDING — a list of 512 numbers that uniquely represent that face.
+
+WHAT IT DOES IN OUR PROJECT:
+  Step 1: Takes the cropped face image (detected by YOLO)
+  Step 2: Generates a 512-dimensional embedding vector
+           Example: [0.23, -0.45, 0.87, 0.12, ... ] (512 numbers)
+  Step 3: Compares this with all KNOWN faces in our database
+  Step 4: If similarity >= 0.75 → "KNOWN person, name = John Doe"
+           If similarity < 0.75  → "UNKNOWN person"
+
+WHAT IS AN EMBEDDING?
+  Think of it like a fingerprint, but for faces.
+  Every person has a unique set of 512 numbers.
+  Even different photos of the same person will give very similar numbers.
+  Photos of different people give very different numbers.
+
+WHAT IS COSINE SIMILARITY?
+  This is how we compare two embeddings.
+  - Score = 1.0 → Exact same person (identical)
+  - Score = 0.9+ → Almost certainly same person
+  - Score = 0.75 → Our threshold — we say "same person"
+  - Score = 0.5 → Probably different person
+  - Score = 0.0 → Completely different
+
+  Formula: similarity = (A · B) / (|A| × |B|)
+  Where A and B are the two 512-dimension vectors.
+
+WHY WE CHOSE IT:
+  - 99%+ accuracy on LFW (standard face recognition benchmark)
+  - Fast — < 10ms per face
+  - Handles glasses, hats, partial occlusion, different angles
+
+FILES USED: backend/face_recognition.py
+
+
+══════════════════════════════════════
+3.3  DeepSORT  (Person Tracking)
+══════════════════════════════════════
+
+WHAT IT IS:
+  DeepSORT (Deep Simple Online and Realtime Tracking) is a tracking
+  algorithm that assigns a consistent ID to each person across multiple
+  video frames. It combines two techniques:
+    1. Kalman Filter — predicts WHERE the person will be next frame
+    2. Hungarian Algorithm — matches predictions to actual detections
+
+THE PROBLEM IT SOLVES:
+  Without tracking:
+    Frame 1: Detect unknown person → Save to database (entry #1)
+    Frame 2: Same person → Save again (entry #2) — DUPLICATE!
+    Frame 30: Same person → 30 entries for one person — USELESS!
+
+  With DeepSORT:
+    Frame 1: Detect unknown person → Assign Track ID = 5 → Save once
+    Frame 2: Same person → Recognize Track ID = 5 → Just update timestamp
+    Frame 30: Same person → Still Track ID = 5 → Still just one record
+
+  Result: ONE clean database entry per unique person!
+
+HOW KALMAN FILTER WORKS (SIMPLE):
+  Imagine you see a person walking left-to-right.
+  The Kalman Filter says: "Based on their speed and direction,
+  next frame they should be about 10 pixels to the right."
+  When we detect them next frame, we match them to that prediction.
+  This works even if they're briefly blocked (occluded).
+
+HOW HUNGARIAN ALGORITHM WORKS:
+  If we have 3 detections and 4 existing tracks,
+  we need to figure out which detection = which track.
+  The Hungarian Algorithm finds the OPTIMAL assignment
+  to minimize total matching cost.
+
+  Like solving: "Which taxi should pick up which passenger
+  to minimize total driving distance for everyone?"
+
+DEEPSORT PARAMETERS WE CONFIGURED:
+  - max_age = 30       → Keep track alive for 30 frames after last seen
+  - min_hits = 3       → Need 3 detections before creating a new track
+                         (prevents phantom tracks from noise)
+  - max_iou_distance = 0.7   → Max overlap distance for matching
+  - max_cosine_distance = 0.4 → Max appearance distance for matching
+
+FILES USED: backend/tracking.py
+
+
+══════════════════════════════════════
+3.4  FastAPI  (Backend REST API)
+══════════════════════════════════════
+
+WHAT IT IS:
+  FastAPI is a modern, high-performance Python web framework for building
+  APIs. It is one of the fastest Python frameworks available (as fast as
+  Node.js and Go).
+
+WHAT IT DOES IN OUR PROJECT:
+  Provides 20+ REST API endpoints that the frontend (and external systems)
+  can call to interact with the CCTV system.
+
+  Examples:
+    GET  /api/cameras           → List all cameras
+    POST /api/cameras           → Add a new camera
+    GET  /api/unknown-persons   → Get all unknown faces
+    POST /api/known-persons     → Register a new known person
+    GET  /api/system/health     → Check if system is running
+
+WHAT IS REST API?
+  REST = Representational State Transfer
+  It's a standard way for applications to talk to each other over HTTP.
+  Like a menu at a restaurant — you place an order (request) and
+  get food (response) without knowing how the kitchen works.
+
+WHY WE CHOSE FASTAPI:
+  - Automatically generates Swagger documentation (/docs)
+  - Built-in data validation with Pydantic
+  - Supports WebSocket for real-time communication
+  - Async support for handling many requests simultaneously
+  - 2-3x faster than Flask or Django for APIs
+
+WEBSOCKET:
+  Normal HTTP: Client asks → Server answers → Connection closes
+  WebSocket:   Connection stays OPEN → Server pushes updates anytime
+
+  We use WebSocket to stream live frame data and metrics to the
+  dashboard without the browser constantly refreshing.
+
+FILES USED: backend/api/fastapi_server.py
+
+
+══════════════════════════════════════
+3.5  Streamlit  (Dashboard UI)
+══════════════════════════════════════
+
+WHAT IT IS:
+  Streamlit is a Python library that lets you build web applications
+  with pure Python — no HTML, CSS, or JavaScript needed.
+  It turns Python scripts into interactive web dashboards.
+
+WHAT IT DOES IN OUR PROJECT:
+  Creates a 6-page web dashboard:
+
+  Page 1 - Overview:
+    → Real-time metrics (CPU, RAM, people counts)
+    → Camera status (online/offline, FPS)
+    → Recent system events and alerts
+
+  Page 2 - Unknown Gallery:
+    → Grid view of all detected unknown faces
+    → Filters: by camera, date, appearance count
+    → Actions: identify person, delete record
+
+  Page 3 - Live Cameras:
+    → Live status of all connected cameras
+    → Per-camera controls (FPS, confidence threshold)
+    → Frame statistics
+
+  Page 4 - Analytics:
+    → Detection timeline chart (bar chart by hour)
+    → Known vs Unknown pie chart
+    → Most frequent unknown persons chart
+    → Export data to CSV
+
+  Page 5 - Configuration:
+    → Add/remove cameras
+    → Register new known persons with face photos
+    → Test face recognition with uploaded image
+
+  Page 6 - Logs:
+    → System event logs with severity filter
+    → Detection event history
+    → Person tracking history
+
+WHY WE CHOSE STREAMLIT:
+  - Build dashboards 10x faster than traditional web development
+  - No frontend expertise needed — pure Python
+  - Built-in components: charts, file uploaders, sliders, tables
+  - Auto-refreshing capability
+
+FILES USED: frontend/app.py + frontend/pages/*.py
+
+
+══════════════════════════════════════
+3.6  MySQL  (Database)
+══════════════════════════════════════
+
+WHAT IT IS:
+  MySQL is the world's most popular open-source relational database.
+  Data is stored in tables (like Excel sheets) with relationships
+  between them.
+
+OUR 7 DATABASE TABLES:
+
+  1. cameras
+     → Stores camera configurations (RTSP URL, location, FPS settings)
+     → Columns: camera_id, name, location, rtsp_url, enabled, fps...
+
+  2. known_faces
+     → Registered persons (employees, staff, family members)
+     → Columns: id, name, employee_id, department, face_embedding...
+
+  3. known_face_images
+     → Multiple photos per known person (for better accuracy)
+     → Linked to known_faces via person_id (Foreign Key)
+
+  4. unknown_faces  ← MOST IMPORTANT TABLE
+     → Every unique unknown person detected
+     → Columns: track_id, best_image_path, first_seen, last_seen,
+                appearance_count, camera_id, confidence...
+     → UNIQUE constraint on (track_id, camera_id) prevents duplicates
+
+  5. unknown_face_images
+     → All photos of each unknown person across sightings
+     → Linked to unknown_faces via unknown_id
+
+  6. detections
+     → Every single detection event (known AND unknown)
+     → Columns: camera_id, track_id, person_name, confidence, bbox,
+                detected_at...
+     → Used for timeline/history queries
+
+  7. system_logs
+     → Audit trail of everything that happens
+     → Columns: event_type, description, severity, camera_id...
+     → Severity levels: info, warning, error
+
+CONNECTION POOLING:
+  Instead of opening a new database connection for every query
+  (which is slow), we maintain a POOL of 10 ready connections.
+  Queries borrow a connection, use it, and return it to the pool.
+  This is much faster for high-throughput systems.
+
+FILES USED: backend/database.py + sql/init_db.sql
+
+
+══════════════════════════════════════
+3.7  OpenCV  (Camera & Image Processing)
+══════════════════════════════════════
+
+WHAT IT IS:
+  OpenCV (Open Source Computer Vision Library) is the world's most
+  popular computer vision library. Used in almost every vision project.
+
+WHAT IT DOES IN OUR PROJECT:
+  1. RTSP Stream Reading:
+     cap = cv2.VideoCapture("rtsp://192.168.1.100:554/stream")
+     ret, frame = cap.read()
+     → Reads frames from IP cameras over the network
+
+  2. Frame Processing:
+     → Resize frames to 480p for faster processing
+     → Convert color spaces (BGR ↔ RGB ↔ Gray)
+
+  3. Face Drawing (Annotations):
+     → Draw bounding boxes around detected faces
+     → Write person names and confidence scores
+     → Different colors for known (green) vs unknown (red)
+
+  4. Image Saving:
+     → Save face images as .jpg files
+     → Compress with quality settings
+
+  5. Fallback Detection:
+     → Haar Cascade face detector as backup when YOLO unavailable
+
+RTSP EXPLAINED:
+  RTSP = Real Time Streaming Protocol
+  It's the standard protocol used by IP cameras (CCTV, webcams, etc.)
+  URL format: rtsp://username:password@ip_address:port/stream_path
+  Example:    rtsp://admin:123456@192.168.1.100:554/live
+
+FILES USED: backend/cctv_stream.py + backend/face_detection.py
+
+
+══════════════════════════════════════
+3.8  JWT Authentication
+══════════════════════════════════════
+
+WHAT IT IS:
+  JWT = JSON Web Token
+  It's a secure way to verify that an API request is from an
+  authorized user without storing sessions on the server.
+
+HOW IT WORKS:
+  1. User logs in with username + password
+  2. Server creates a token: "eyJhbGc..." (encoded string)
+  3. User includes this token in every future request
+  4. Server decodes the token to verify the user is legitimate
+  5. Token expires after 60 minutes (configurable)
+
+LIKE A CONCERT WRISTBAND:
+  → You show ID once at entry (login)
+  → You get a wristband (token)
+  → Guards check your wristband (not your ID) every time you enter a zone
+  → Wristband expires at midnight (token expiry)
+
+WHY IT'S IMPORTANT:
+  Without auth, anyone who knows your API URL could add/delete cameras,
+  steal face data, or shut down the system.
+
+FILES USED: backend/api/fastapi_server.py
+
+
+══════════════════════════════════════
+3.9  Pydantic  (Data Validation)
+══════════════════════════════════════
+
+WHAT IT IS:
+  Pydantic is a Python library for data validation using type hints.
+  It ensures that data coming into the API is in the correct format.
+
+EXAMPLE:
+  When someone calls POST /api/cameras, we expect this data:
+    {
+      "camera_id": "entrance_01",    ← must be a string
+      "rtsp_url": "rtsp://...",      ← must be a string
+      "processing_fps": 15           ← must be an integer
+    }
+
+  If someone sends processing_fps = "hello" (a string instead of int),
+  Pydantic automatically rejects it with a clear error message.
+  This prevents crashes and security vulnerabilities.
+
+IT ALSO:
+  → Powers FastAPI's automatic /docs documentation
+  → Reads configuration from .env file (pydantic-settings)
+
+FILES USED: backend/api/fastapi_server.py + backend/config.py
+
+
+══════════════════════════════════════
+3.10  Python Threading
+══════════════════════════════════════
+
+WHAT IT IS:
+  Threading allows multiple pieces of code to run SIMULTANEOUSLY
+  in the same Python program.
+
+WHY WE NEED IT:
+  If we had only ONE camera, we could process it sequentially.
+  But with 10 cameras, sequential processing means:
+    Camera 1 takes 100ms → then Camera 2 takes 100ms → ... → 1 second total
+
+  With threading:
+    All 10 cameras process at the SAME TIME → still 100ms total!
+
+HOW WE USE IT:
+  Each camera gets its own dedicated thread:
+    Thread 1: Reads Camera 1 frames continuously
+    Thread 2: Reads Camera 2 frames continuously
+    ...
+    Thread 10: Reads Camera 10 frames continuously
+
+  ThreadPoolExecutor manages up to 50 camera threads automatically.
+
+THREAD SAFETY:
+  When multiple threads access the same data (like frame results),
+  we use a Lock (threading.Lock) to prevent conflicts:
+    → Only one thread can write frame results at a time
+    → Other threads wait their turn
+    → No data corruption
+
+FILES USED: backend/cctv_stream.py + backend/main.py
+
+
+══════════════════════════════════════
+3.11  Plotly  (Interactive Charts)
+══════════════════════════════════════
+
+WHAT IT IS:
+  Plotly is a Python graphing library that creates beautiful,
+  interactive charts that run in web browsers.
+
+CHARTS WE CREATED:
+  1. Bar Chart — Detections per hour (timeline)
+  2. Pie Chart — Known vs Unknown person ratio
+  3. Bar Chart — Most frequent unknown persons ranking
+
+INTERACTIVE FEATURES:
+  → Hover over bars to see exact numbers
+  → Click legend items to show/hide data
+  → Zoom in/out on any region
+  → Download chart as PNG
+
+FILES USED: frontend/pages/04_Analytics.py
+
+
+══════════════════════════════════════
+3.12  Loguru  (Advanced Logging)
+══════════════════════════════════════
+
+WHAT IT IS:
+  Loguru is a modern Python logging library with beautiful colored
+  output and automatic file rotation.
+
+HOW WE USE IT:
+  logger.info("Camera connected")        → Blue info message
+  logger.warning("Frame dropped")        → Yellow warning
+  logger.error("Database query failed")  → Red error message
+
+  Logs go to BOTH:
+    → Console (with colors for easy reading during development)
+    → Log file (stored in data/logs/ with daily rotation)
+    → Log files kept for 30 days then auto-deleted
+
+WHY BETTER THAN PRINT():
+  print("something") → No timestamp, no level, no file info
+  logger.info("something") → [2024-05-05 14:23:11] INFO | camera_id=1 | message
+
+FILES USED: backend/utils.py
+
+
+------------------------------------------------------------------------
+SECTION 4: PROJECT ARCHITECTURE (HOW IT ALL CONNECTS)
+------------------------------------------------------------------------
+
+                    ┌─────────────────┐
+                    │  IP CAMERAS     │
+                    │ (RTSP streams)  │
+                    └────────┬────────┘
+                             │ RTSP video stream
+                             ▼
+                    ┌─────────────────┐
+                    │  OpenCV         │  ← Reads video frames
+                    │  CCTV Stream    │  ← Manages 1-50 cameras
+                    │  Manager        │  ← Auto-reconnects
+                    └────────┬────────┘
+                             │ Raw video frames (numpy arrays)
+                             ▼
+                    ┌─────────────────┐
+                    │  YOLOv8         │  ← "Where are the faces?"
+                    │  Face Detector  │  ← Returns bounding boxes
+                    └────────┬────────┘
+                             │ Face locations [x1,y1,x2,y2]
+                             ▼
+                    ┌─────────────────┐
+                    │  DeepSORT       │  ← "Is this the same person
+                    │  Tracker        │     as last frame?"
+                    └────────┬────────┘
+                             │ Track IDs (person #1, #2, #3...)
+                             ▼
+                    ┌─────────────────┐
+                    │  InsightFace    │  ← "Who is this person?"
+                    │  Recognition    │  ← Generates 512-dim embedding
+                    └────────┬────────┘
+                             │ Known/Unknown + confidence
+                             ▼
+               ┌─────────────────────────────┐
+               │         DECISION            │
+               │                             │
+      ┌────────┴──────┐           ┌──────────┴──────┐
+      │  KNOWN PERSON │           │ UNKNOWN PERSON  │
+      │  Update count │           │ Save image+data │
+      │  Log detection│           │ One entry only  │
+      └───────────────┘           └─────────────────┘
+               │                             │
+               └──────────────┬──────────────┘
+                               │
+                    ┌──────────▼──────────┐
+                    │     MySQL DB        │  ← Permanent storage
+                    │  7 tables           │
+                    └──────────┬──────────┘
+                               │
+                    ┌──────────▼──────────┐
+                    │   FastAPI Server    │  ← REST API (20+ endpoints)
+                    │   + WebSocket       │  ← Real-time updates
+                    └──────────┬──────────┘
+                               │ HTTP / WebSocket
+                    ┌──────────▼──────────┐
+                    │ Streamlit Dashboard │  ← Web UI (6 pages)
+                    │  localhost:8501     │
+                    └─────────────────────┘
+
+
+------------------------------------------------------------------------
+SECTION 5: DATA FLOW FOR UNKNOWN PERSON DETECTION
+------------------------------------------------------------------------
+
+  STEP 1: Camera captures video frame
+  STEP 2: YOLOv8 finds a face at position [100, 50, 150, 180]
+  STEP 3: DeepSORT checks — "Is this face in any existing track?"
+            → No match found → Create Track ID #7 (new person!)
+  STEP 4: InsightFace generates embedding: [0.23, -0.45, 0.87, ...]
+  STEP 5: Compare with all known faces in memory cache
+            → Best match similarity = 0.42 (below 0.75 threshold)
+            → Decision: UNKNOWN PERSON
+  STEP 6: Check database: "Is Track #7 already saved for this camera?"
+            → No → This is a NEW unknown person
+  STEP 7: Save face image to disk: data/unknown_faces/unknown_cam1_20240505.jpg
+  STEP 8: Create database record:
+            track_id = "7"
+            first_seen = 2024-05-05 14:23:11
+            last_seen = 2024-05-05 14:23:11
+            appearance_count = 1
+            camera_id = "entrance_01"
+  STEP 9: Mark Track #7 as "logged" (in memory)
+  STEP 10: Send WebSocket alert to dashboard → "New unknown person!"
+
+  --- 5 SECONDS LATER, SAME PERSON STILL IN VIEW ---
+
+  STEP 1: Same face detected again
+  STEP 2: DeepSORT recognizes → Track ID #7 (same person!)
+  STEP 3: Check: "Is Track #7 already logged?" → YES!
+  STEP 4: Just UPDATE the database record:
+            last_seen = 2024-05-05 14:23:16
+            appearance_count = 2
+  STEP 5: NO new record created — zero duplicates!
+
+
+------------------------------------------------------------------------
+SECTION 6: DEDUPLICATION STRATEGY (WHY NO DUPLICATES)
+------------------------------------------------------------------------
+
+THREE LAYERS OF DEDUPLICATION:
+
+  LAYER 1 — Track ID Memory (In-Memory, Per Session)
+    → When a track is logged, we mark it in a Python set
+    → Any subsequent frame with same track ID is skipped
+    → Fast: O(1) lookup, microseconds
+    → Limitation: Resets when system restarts
+
+  LAYER 2 — Database Check (Persistent)
+    → Before saving, query: SELECT * WHERE track_id=? AND camera_id=?
+    → If found → UPDATE instead of INSERT
+    → Persistent across system restarts
+    → UNIQUE constraint in MySQL enforces this at DB level too
+
+  LAYER 3 — UNIQUE Database Constraint
+    → UNIQUE KEY (track_id, camera_id) in MySQL
+    → Even if code has a bug, database physically prevents duplicate rows
+    → Last line of defense
+
+
+------------------------------------------------------------------------
+SECTION 7: FILE STRUCTURE EXPLAINED
+------------------------------------------------------------------------
+
+enhance/
+│
+├── backend/                    ← All AI and API code (Python)
+│   ├── config.py               ← All settings (DB password, API port, etc.)
+│   ├── utils.py                ← Shared helper functions
+│   ├── database.py             ← All MySQL operations (7 table DAOs)
+│   ├── cctv_stream.py          ← Camera connection + frame reading
+│   ├── face_detection.py       ← YOLOv8 face detection
+│   ├── face_recognition.py     ← InsightFace embedding + matching
+│   ├── tracking.py             ← DeepSORT tracking algorithm
+│   ├── unknown_face_handler.py ← Save/update unknown persons logic
+│   ├── main.py                 ← Main orchestrator (connects everything)
+│   └── api/
+│       └── fastapi_server.py   ← All 20+ REST API endpoints + WebSocket
+│
+├── frontend/                   ← Dashboard UI (Streamlit)
+│   ├── app.py                  ← Main landing page
+│   ├── pages/
+│   │   ├── 01_Overview.py      ← Real-time metrics dashboard
+│   │   ├── 02_UnknownGallery.py← Browse unknown persons
+│   │   ├── 03_LiveCameras.py   ← Camera live feed & controls
+│   │   ├── 04_Analytics.py     ← Charts and data export
+│   │   ├── 05_Configuration.py ← Add cameras, register persons
+│   │   └── 06_Logs.py          ← System and detection logs
+│   ├── utils/
+│   │   ├── api_client.py       ← Functions to call FastAPI endpoints
+│   │   ├── formatters.py       ← Format dates, numbers, icons
+│   │   └── cache.py            ← Cache API responses (5 sec TTL)
+│   └── styles/
+│       └── custom.css          ← Dark theme styling
+│
+├── sql/
+│   └── init_db.sql             ← SQL script to create all 7 tables
+│
+├── data/                       ← Auto-created at runtime
+│   ├── unknown_faces/          ← Saved photos of unknown persons
+│   ├── known_faces/            ← Saved photos of registered persons
+│   └── logs/                   ← Daily rotating log files
+│
+├── requirements.txt            ← All Python packages to install
+├── .env.template               ← Template for configuration
+├── setup_db.py                 ← Run once to create database tables
+├── start_backend.py            ← Start FastAPI server
+├── start_frontend.py           ← Start Streamlit dashboard
+└── add_known_faces.py          ← Bulk import known persons
+
+
+------------------------------------------------------------------------
+SECTION 8: HOW TO EXPLAIN THIS PROJECT IN AN INTERVIEW
+------------------------------------------------------------------------
+
+SHORT EXPLANATION (30 seconds):
+  "I built a real-time AI surveillance system that connects to multiple
+   IP cameras simultaneously. It uses YOLOv8 to detect faces, InsightFace
+   to recognize whether they are known or unknown persons, and DeepSORT
+   to track them across frames preventing duplicate database entries.
+   Everything is exposed via a FastAPI REST API with WebSocket support
+   for real-time updates, and visualized through a Streamlit dashboard."
+
+MEDIUM EXPLANATION (2 minutes):
+  "The system has three main AI components working in a pipeline:
+   First, YOLOv8 detects all faces in each camera frame and gives us
+   bounding box coordinates. Then DeepSORT assigns a consistent Track ID
+   to each person across multiple frames — this is crucial because without
+   tracking, the same person would create thousands of duplicate records
+   per day. Finally, InsightFace converts each face to a 512-dimensional
+   mathematical embedding and compares it against our registered persons
+   database using cosine similarity. If the similarity is above 0.75,
+   it's a known person; below 0.75, we save them as unknown.
+
+   The backend is a FastAPI server with 20+ REST endpoints, JWT auth,
+   rate limiting, and WebSocket connections for real-time streaming.
+   MySQL stores all the data in 7 related tables. The frontend is a
+   6-page Streamlit dashboard showing live metrics, an unknown persons
+   gallery with filter/sort/identify actions, analytics charts, and
+   a configuration panel for managing cameras and registered persons."
+
+KEY CHALLENGES TO MENTION:
+  1. Duplicate prevention — solved with 3-layer deduplication
+     (in-memory set + DB check + UNIQUE constraint)
+  2. Multi-camera scalability — solved with ThreadPoolExecutor
+     (each camera runs in its own thread)
+  3. Real-time performance — solved with:
+     - Frame resolution downsampling (1080p → 480p for processing)
+     - In-memory embedding cache (avoid DB query every frame)
+     - Frame skipping (process every Nth frame based on FPS target)
+  4. Camera disconnections — solved with exponential backoff
+     reconnection strategy (wait 1s, 2s, 4s, 8s... up to 30s)
+
+
+------------------------------------------------------------------------
+SECTION 9: KEY NUMBERS TO REMEMBER
+------------------------------------------------------------------------
+
+  → 512 dimensions — InsightFace face embedding size
+  → 0.75 — Face match threshold (similarity score)
+  → 7 — Number of database tables
+  → 20+ — Number of REST API endpoints
+  → 50 — Maximum cameras supported simultaneously
+  → 30 FPS — Target processing speed on GPU
+  → 10 — Database connection pool size
+  → 60 minutes — JWT token expiry time
+  → 30 days — Log file retention period
+  → 5 seconds — Dashboard cache TTL (refresh interval)
+  → 3 layers — Deduplication strategy layers
+  → 4 WebSocket endpoints — /ws/live, /ws/metrics, /ws/alerts, /ws/camera/{id}
+
+
+------------------------------------------------------------------------
+SECTION 10: PORTS AND SERVICES
+------------------------------------------------------------------------
+
+  FastAPI Backend:  http://localhost:8000
+  API Documentation: http://localhost:8000/docs
+  Streamlit Dashboard: http://localhost:8501
+  MySQL Database: localhost:3306
+
+
+------------------------------------------------------------------------
+SECTION 11: SETUP SEQUENCE
+------------------------------------------------------------------------
+
+  1. pip install -r requirements.txt    ← Install all libraries
+  2. Copy .env.template to .env         ← Set your DB password
+  3. python setup_db.py                 ← Create database tables
+  4. python start_backend.py            ← Start API server (Terminal 1)
+  5. python start_frontend.py           ← Start dashboard (Terminal 2)
+  6. python add_known_faces.py          ← Add known persons (optional)
+  7. Add cameras via dashboard or API   ← Start surveillance
+
+
+================================================================================
+                              END OF DOCUMENT
+================================================================================
